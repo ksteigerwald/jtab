@@ -7,7 +7,7 @@
  *   http://github.com/tardate/jtab/tree/master : source code repository, wiki, documentation
  *
  * This library also depends on the following two libraries that must be loaded for it to work:
- *   prototype - http://www.prototypejs.org/
+ *   jQuery - http://www.jquery.com/
  *   Raphaël - http://raphaeljs.com/
  *
  *
@@ -369,6 +369,7 @@ Array.prototype.max_chars = function() {
 // public members:
 //  isValid        = whether valid chord defined
 //  isCaged        = whether chord is CAGED type
+//  isCustom       = whether chord is a custom fingering
 //  fullChordName  = full chord name, including position e.g. D#m7:3
 //  chordName      = chord name, without position e.g. D#m7
 //  baseName       = translated chord name (B <-> #), without position e.g. Ebm7
@@ -379,7 +380,7 @@ Array.prototype.max_chars = function() {
 //  cagedPos       = caged position e.g. 3
 //
 
-var jtabChord = $.klass({
+var jtabChord = jQuery.klass({
   initialize: function(token) {
     this.scale = jtab.WesternScale;
     this.baseNotes = this.scale.BaseNotes;
@@ -388,13 +389,23 @@ var jtabChord = $.klass({
     this.isValid = false;
 
     this.fullChordName = token;  
-    this.isCaged = ( this.fullChordName.match( /:/ ) != null )
+    this.isCustom = ( this.fullChordName.match( /\%/ ) != null )        
+    this.isCaged = ( this.fullChordName.match( /\:/ ) != null )
+
+    
     if (this.isCaged) {
       var parts = this.fullChordName.split(':');
       this.chordName = parts[0];
       this.cagedPos = parts[1];
+    } else if (this.isCustom){
+      var parts = this.fullChordName.match( /\[(.+?)\]/ );
+      if(parts){
+        this.chordName = parts[1];        
+      } else {
+        this.chordName = '';
+      }
     } else {
-      this.chordName = this.fullChordName
+      this.chordName = this.fullChordName;
       this.cagedPos = 1;
     }    
     this.rootExt = this.chordName.replace(/^[A-G#b]{1,2}/,''); 
@@ -410,10 +421,66 @@ var jtabChord = $.klass({
     }
     
     if ( ( this.isCaged ) && ( this.cagedPos > 1 ) ) {
-        this.setCagedChordArray();
+      this.setCagedChordArray();
+    } else if (this.isCustom){
+      this.setCustomChordArray();
     } else {
       this.setChordArray(this.baseName);
     }
+  },
+  setCustomChordArray: function(){
+    this.chordArray = new Array();
+    this.chordArray = this.parseCustomChordArrayFromToken();
+  },
+  parseCustomChordArrayFromToken: function() {
+    notes = this.fullChordName.replace(/(\%|\[.+\])/g, '');
+    pairs = notes.split('.');
+    if (pairs.length < 6){
+      this.isValid = false;      
+      return;
+    }
+    this.isValid = true;    
+    
+    array = [];
+    for (var i = 0; i < pairs.length; i++){
+      pair = pairs[i].split('/')
+      if (pair[0].match(/X/)){
+        pair = [-1]
+      }
+      array.push(pair)
+    }
+
+    // fingeredFrets = array.reject(function(p){ 
+    //   return p.length === 1 
+    // }).collect(function(p){
+    //   return parseInt(p[0])
+    //   }).flatten().without(0,-1)
+
+    // `array` is an array of string/fretnumber pairs like [0,1]. 
+
+    fingeredFrets = jQuery.grep(array, function(pair){ 
+      // get only the pairs with two elements
+      return (pair.length != 1);
+    }).map(function(pair){
+      return parseInt(pair[0]);
+      }).map(function(i){
+        if ((i != 0) || (i != -1)){
+          return i;
+        } else {
+          return null;
+        }
+      })
+      
+    fingeredFrets = jQuery.grep(fingeredFrets,function(n){
+      return(n);
+    });  
+    
+    //find all the fret positions which arent X or 0. I'm sure there's a better way to do this.
+    
+    min = Math.min.apply( Math, fingeredFrets );
+
+    array.unshift(min-1);
+    return array;
   },
   setChordArray: function(chordName) { // clones chord array (position 0) from chord ref data into this object
     this.chordArray = new Array();
@@ -447,7 +514,7 @@ var jtabChord = $.klass({
     
   },
   shiftChordArray: function(atFret,modelChord) { // shift chord to new fret position
-        
+
     var initFret = this.chordArray[0];
     if (atFret != initFret) {
       var use_caged_fingering = ( (this.isCaged) && (this.cagedPos > 0) && ( ! ( this.baseChords[modelChord][1][0] === undefined ) )  );
@@ -789,7 +856,8 @@ Raphael.fn.render_token = function (token) {
 
   if ( c.isValid ) { // draw chord
     var chord = c.chordArray;
-    this.chord_fretboard(chord[0], c.fullChordName );
+    // this.chord_fretboard(chord[0], c.fullChordName );
+    this.chord_fretboard(chord[0], c.chordName );
     for (var i = 1; i < chord.length ; i++) {  
       this.chord_note(chord[0], i, chord[i]);
     }
@@ -823,9 +891,16 @@ Raphael.fn.render_token = function (token) {
 //   0 : unknown
 jtab.characterize = function (notation) {
   var tabtype = 0;
-  if(notation == undefined) notation = ''
-  var gotChord = ( notation.match( /[^\$][A-G]|^[A-G]/ ) != undefined ); //TODO: NULL TO undefined
-  var gotTab = ( ( notation.match( /\$/ ) != null ) || ( notation.match( /[0-9|Xx|\.]{6,}/ ) != null ) );
+  
+  if(notation == undefined){ 
+    notation = ''; 
+  }
+  
+  var gotCustomChord = ( notation.match( /[\%]([0-4|T|X])?/ )   != undefined );  
+  var gotNormalChord = ( notation.match( /[^\$][A-G]|^[A-G]/ )  != undefined );
+  var gotTab = ( ( notation.match( /\$/ ) != null ) || ( notation.match( /[^\%][0-9|Xx|\.]{6,}/ ) != null ) );  
+  var gotChord =  gotNormalChord || gotCustomChord ;      
+  
   // set defaults - apply scaling here (TODO)
   Raphael.fn.current_offset = Raphael.fn.margin_left;
   if ( gotChord && gotTab ) { // chord and tab
@@ -856,26 +931,29 @@ jtab.getStyle = function (element, style) {
   var value = element.css(style);
   if(!value) {
     if(document.defaultView) {
-      value = document.defaultView.getComputedStyle(element, "").getPropertyValue(style);
+      value = document.defaultView.getComputedStyle(element[0], "").getPropertyValue(style);
     } else if(element.currentStyle) {
       value = element.currentStyle[style];
     }
   }
+
   return value;
 }
 
 // set color pallette for the jtab rendering
 jtab.setPalette = function (element) {
-  var elStyle = jtab.getStyle( $(element), 'color' );
-  if (! elStyle) elStyle='#000';
-  Raphael.fn.color = elStyle;
-  Raphael.fn.tab_text_color = elStyle;
-    
-  elStyle = jtab.getStyle( $(element), 'backgroundColor' );
-  if (! elStyle) elStyle='#fff';
-  if (elStyle == 'transparent') elStyle = '#fff';  
-  Raphael.fn.fingering_text_color = elStyle;
+  var fgColor = jtab.getStyle( jQuery(element), 'color' );
+  if (!fgColor) {
+    fgColor = '#000';
+  }
+  Raphael.fn.color = fgColor;
+  Raphael.fn.tab_text_color = fgColor;
 
+  bgColor = jtab.getStyle( jQuery(element), 'background-color' );
+  if (!bgColor || (bgColor == 'rgba(0, 0, 0, 0)')) {
+    bgColor = '#fff';
+  }
+  Raphael.fn.fingering_text_color = bgColor; 
 }
 
 // main render entry point
@@ -887,9 +965,9 @@ jtab.render = function (element,notation) {
   var rndID="builder_"+jtab.element_count++;
     
   // add the Raphael canvas in its own DIV. this gets around an IE6 issue with not removing previous renderings
-  var canvas_holder = $('<div id="'+rndID+'"></div>').css({height: Raphael.fn.total_height});
+  var canvas_holder = jQuery('<div id="'+rndID+'"></div>').css({height: Raphael.fn.total_height});
   
-  $(element).html(canvas_holder);
+  jQuery(element).html(canvas_holder);
   jtab.setPalette(element);
   canvas = Raphael(rndID, 80, Raphael.fn.total_height );
   canvas.tab_start();
@@ -903,7 +981,7 @@ jtab.render = function (element,notation) {
 
 // process implicit rendering of tags with class 'jtab'
 jtab.renderimplicit = function() {
-    $('.jtab').each( function(name, index) { jtab.render(this,this.innerHTML); } ); //TODO: $('.jtab').each( function(name, index) { jtab.render(name,name.innerHTML); } );
+  jQuery('.jtab').each( function(name, index) { jtab.render(this,this.innerHTML); } ); //TODO: $('.jtab').each( function(name, index) { jtab.render(name,name.innerHTML); } );
 }
 
 
